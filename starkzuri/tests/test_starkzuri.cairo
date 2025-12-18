@@ -1,240 +1,271 @@
-// #[starknet::interface]
-// trait IERC20<TContractState> {
-//     fn transferFrom(
-//         ref self: TContractState,
-//         sender: starknet::ContractAddress,
-//         recipient: starknet::ContractAddress,
-//         amount: u256,
-//     ) -> bool;
-//     fn transfer(
-//         ref self: TContractState, recipient: starknet::ContractAddress, amount: u256,
-//     ) -> bool;
-//     fn balanceOf(self: @TContractState, account: starknet::ContractAddress) -> u256;
-//     fn approve(ref self: TContractState, spender: starknet::ContractAddress, amount: u256) ->
-//     bool;
+use core::option::OptionTrait;
+use core::result::ResultTrait;
+use core::traits::TryInto;
+use snforge_std::{
+    ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
+    stop_cheat_caller_address,
+};
+use starknet::ContractAddress;
+use starkzuri::gamification::{
+    IStarkZuriGamificationDispatcher, IStarkZuriGamificationDispatcherTrait,
+};
+use starkzuri::profile::{IStarkZuriProfileDispatcher, IStarkZuriProfileDispatcherTrait};
+use starkzuri::starkzurihub::{
+    IERC20Dispatcher, IERC20DispatcherTrait, IStarkZuriHubDispatcher, IStarkZuriHubDispatcherTrait,
+};
+
+fn deploy_contract(name: ByteArray, mut args: Array<felt252>) -> ContractAddress {
+    let contract = declare(name).unwrap().contract_class();
+    let (contract_address, _) = contract.deploy(@args).unwrap();
+    contract_address
+}
+
+#[test]
+fn test_full_market_flow_with_xp() {
+    // 1. SETUP ADDRESSES
+    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+    let user: ContractAddress = 'USER'.try_into().unwrap();
+    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
+
+    // 2. DEPLOY GAMIFICATION
+    let mut game_args = ArrayTrait::new();
+    admin.serialize(ref game_args); // Admin is Owner
+    let game_addr = deploy_contract("StarkZuriGamification", game_args);
+    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
+
+    // 3. DEPLOY MOCK USDC
+    let mut token_args = ArrayTrait::new();
+    let name: ByteArray = "USDC";
+    let symbol: ByteArray = "USDC";
+    name.serialize(ref token_args);
+    symbol.serialize(ref token_args);
+    1_000_000_000_000_u256.serialize(ref token_args);
+    admin.serialize(ref token_args);
+    let token_addr = deploy_contract("MockERC20", token_args);
+    let token = IERC20Dispatcher { contract_address: token_addr };
+
+    // 4. DEPLOY HUB (With Game Address)
+    let mut hub_args = ArrayTrait::new();
+    token_addr.serialize(ref hub_args);
+    agent.serialize(ref hub_args);
+    game_addr.serialize(ref hub_args); // Pass Game Addr
+    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
+
+    // 5. AUTHORIZE THE HUB
+    start_cheat_caller_address(game_addr, admin);
+    game.set_controller(hub_addr, true);
+    stop_cheat_caller_address(game_addr);
+
+    // 6. FUND & APPROVE USER
+    start_cheat_caller_address(token_addr, admin);
+    token.transfer(user, 1000_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    start_cheat_caller_address(token_addr, user);
+    token.approve(hub_addr, 1000_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    // 7. CREATE MARKET (Triggers XP)
+    start_cheat_caller_address(hub_addr, user);
+    hub.create_market("Q?", "img", 2000000000, 'Crypto');
+
+    // 8. BUY SHARES (Triggers XP)
+    hub.buy_shares(1, true, 100_000_000);
+    stop_cheat_caller_address(hub_addr);
+
+    // 9. VERIFY XP WAS AWARDED
+    let stats = game.get_user_stats(user);
+    // 100 XP (Create) + 50 XP (Trade) = 150 XP
+    assert(stats.total_xp == 150, 'XP Calculation Wrong');
+    assert(stats.trades_count == 1, 'Trade count wrong');
+}
+
+// // SAD PATH 2: Unauthorized Resolution
+// // We expect this to FAIL with 'Unauthorized Agent'
+// #[test]
+// #[should_panic(expected: ('Unauthorized Agent',))]
+// fn test_fail_unauthorized_resolution() {
+//     // 1. Setup
+//     let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+//     let hacker: ContractAddress = 'HACKER'.try_into().unwrap(); // Not the Agent!
+//     let agent: ContractAddress = 'AGENT'.try_into().unwrap();
+
+//     // 1b. Deploy Dummy Gamification (Hub needs it in constructor now)
+//     let mut game_args = ArrayTrait::new();
+//     admin.serialize(ref game_args);
+//     let game_addr = deploy_contract("StarkZuriGamification", game_args);
+
+//     // Deploy
+//     let mut token_args = ArrayTrait::new();
+//     let name: ByteArray = "USDC";
+//     let symbol: ByteArray = "USDC";
+//     name.serialize(ref token_args);
+//     symbol.serialize(ref token_args);
+//     1_000_000_000_000_u256.serialize(ref token_args);
+//     admin.serialize(ref token_args);
+//     let token_addr = deploy_contract("MockERC20", token_args);
+
+//     let mut hub_args = ArrayTrait::new();
+//     token_addr.serialize(ref hub_args);
+//     agent.serialize(ref hub_args);
+//     game_addr.serialize(ref hub_args); // FIX: Pass game addr
+//     let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+//     let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
+
+//     // 2. Create Market
+//     start_cheat_caller_address(hub_addr, admin);
+//     let market_id = hub.create_market("Q?", "img", 2000000000, 'Crypto');
+//     stop_cheat_caller_address(hub_addr);
+
+//     // 3. THE ATTACK: Hacker tries to resolve the market
+//     start_cheat_caller_address(hub_addr, hacker);
+
+//     // This should panic because hacker != agent
+//     hub.resolve_market(market_id, true);
+
+//     stop_cheat_caller_address(hub_addr);
 // }
 
-// #[cfg(test)]
-// mod tests {
-//     use snforge_std::{
-//         ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address, start_prank,
-//         stop_cheat_caller_address, stop_prank,
-//     };
-//     use starknet::{ContractAddress, contract_address_const};
+// SAD PATH 2: Unauthorized Resolution
+// We expect this to FAIL with 'Unauthorized Agent'
+#[test]
+#[should_panic(expected: ('Unauthorized Agent',))]
+fn test_fail_unauthorized_resolution() {
+    // 1. Setup
+    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+    let hacker: ContractAddress = 'HACKER'.try_into().unwrap(); // Not the Agent!
+    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
 
-//     // Import your contract interfaces
-//     use starkzuri::IStarkZuriHubDispatcher;
-//     use starkzuri::{IERC20Dispatcher, IERC20DispatcherTrait, IStarkZuriHubDispatcherTrait};
+    // 1a. Deploy Gamification
+    let mut game_args = ArrayTrait::new();
+    admin.serialize(ref game_args);
+    let game_addr = deploy_contract("StarkZuriGamification", game_args);
+    // Need dispatcher to authorize hub
+    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
 
-//     // --- 1. Helper to Deploy the Hub ---
-//     fn deploy_hub(usdc_address: ContractAddress, agent: ContractAddress) -> ContractAddress {
-//         let contract = declare("StarkZuriHub").unwrap().contract_class();
+    // 1b. Deploy Token & Hub
+    let mut token_args = ArrayTrait::new();
+    let name: ByteArray = "USDC";
+    let symbol: ByteArray = "USDC";
+    name.serialize(ref token_args);
+    symbol.serialize(ref token_args);
+    1_000_000_000_000_u256.serialize(ref token_args);
+    admin.serialize(ref token_args);
+    let token_addr = deploy_contract("MockERC20", token_args);
 
-//         // Serialize constructor args
-//         let mut calldata = ArrayTrait::new();
-//         usdc_address.serialize(ref calldata);
-//         agent.serialize(ref calldata);
+    let mut hub_args = ArrayTrait::new();
+    token_addr.serialize(ref hub_args);
+    agent.serialize(ref hub_args);
+    game_addr.serialize(ref hub_args);
+    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
 
-//         let (contract_address, _) = contract.deploy(@calldata).unwrap();
-//         contract_address
-//     }
+    // 1c. FIX: AUTHORIZE THE HUB (So create_market doesn't crash)
+    start_cheat_caller_address(game_addr, admin);
+    game.set_controller(hub_addr, true);
+    stop_cheat_caller_address(game_addr);
 
-//     // --- 2. Helper to Deploy a Mock Token (USDC) ---
-//     // You need a simple ERC20 contract in your src/ or tests/mocks folder for this to work.
-//     // If you don't have one, snforge can mock the calls, but deploying is cleaner.
-//     // Assuming you have a contract named "MockToken" defined somewhere.
-//     // If not, we will assume standard mocking logic below.
+    // 2. Create Market (Now this will succeed!)
+    start_cheat_caller_address(hub_addr, admin);
+    let market_id = hub.create_market("Q?", "img", 2000000000, 'Crypto');
+    stop_cheat_caller_address(hub_addr);
 
-//     // For this test, let's assume we deploy a "MockERC20"
-//     fn deploy_mock_token() -> ContractAddress {
-//         let contract = declare("MockERC20").unwrap().contract_class();
-//         let mut calldata = ArrayTrait::new();
-//         // Mock Constructor: name, symbol, initial_supply, recipient
-//         "USDC".serialize(ref calldata);
-//         "USDC".serialize(ref calldata);
-//         1_000_000_000_000_u256.serialize(ref calldata); // Mint huge supply
-//         let admin = contract_address_const::<'ADMIN'>();
-//         admin.serialize(ref calldata);
+    // 3. THE ATTACK: Hacker tries to resolve the market
+    start_cheat_caller_address(hub_addr, hacker);
 
-//         let (address, _) = contract.deploy(@calldata).unwrap();
-//         return address;
-//     }
+    // This should panic because hacker != agent
+    // AND it will match the expected error 'Unauthorized Agent'
+    hub.resolve_market(market_id, true);
 
-//     #[test]
-//     fn test_create_market() {
-//         // Setup
-//         let mock_usdc = deploy_mock_token();
-//         let agent = contract_address_const::<'AGENT'>();
-//         let hub_address = deploy_hub(mock_usdc, agent);
-//         let dispatcher = IStarkZuriHubDispatcher { contract_address: hub_address };
+    stop_cheat_caller_address(hub_addr);
+}
 
-//         // Test Data
-//         let question = "Will BTC hit 100k?";
-//         let media = "";
-//         let deadline = 2000000000; // Future timestamp
-//         let category = 'Crypto';
+// ============================================================================
+//                              PROFILE TESTS
+// ============================================================================
 
-//         // Act
-//         start_prank(hub_address, contract_address_const::<'CREATOR'>());
-//         let market_id = dispatcher.create_market(question, media, deadline, category);
-//         stop_prank(hub_address);
+#[test]
+fn test_create_profile_happy_path() {
+    // 1. Setup
+    let user: ContractAddress = 'USER_1'.try_into().unwrap();
+    let zero_addr: ContractAddress = 0.try_into().unwrap();
 
-//         // Assert
-//         assert(market_id == 1, 'Market ID should be 1');
+    // Deploy Profile (No constructor args needed)
+    let profile_addr = deploy_contract("StarkZuriProfile", ArrayTrait::new());
+    let profile = IStarkZuriProfileDispatcher { contract_address: profile_addr };
 
-//         let market = dispatcher.get_market(1);
-//         assert(market.id == 1, 'ID mismatch');
-//         assert(market.virtual_yes_pool == 1_000_000_000, 'Virtual Liquidity wrong');
-//         assert(market.total_pot_usdc == 0, 'Real Pot should be 0');
-//     }
+    // 2. Act: User sets profile
+    start_cheat_caller_address(profile_addr, user);
 
-//     #[test]
-//     fn test_buy_shares() {
-//         // Setup
-//         let mock_usdc_addr = deploy_mock_token();
-//         let usdc = IERC20Dispatcher { contract_address: mock_usdc_addr };
+    profile
+        .set_profile(
+            'felix_codes', // Username (felt252)
+            "Felix", // Display Name
+            "Building Starknet", // Bio
+            "ipfs://my_avatar", // Avatar
+            zero_addr // No referrer
+        );
 
-//         let agent = contract_address_const::<'AGENT'>();
-//         let hub_addr = deploy_hub(mock_usdc_addr, agent);
-//         let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
+    stop_cheat_caller_address(profile_addr);
 
-//         let user = contract_address_const::<'USER'>();
-//         let admin = contract_address_const::<'ADMIN'>(); // Minted tokens here in mock
+    // 3. Assert: Check if data was saved
+    let user_profile = profile.get_profile(user);
+    assert(user_profile.username == 'felix_codes', 'Username mismatch');
+    assert(user_profile.is_registered == true, 'Should be registered');
 
-//         // 1. Transfer USDC to User & Approve Hub
-//         start_prank(mock_usdc_addr, admin);
-//         usdc.transfer(user, 1000_000_000); // Give user 1000 USDC
-//         stop_prank(mock_usdc_addr);
+    // 4. Assert: Reverse lookup (Username -> Address)
+    let looked_up_addr = profile.get_address_from_username('felix_codes');
+    assert(looked_up_addr == user, 'Reverse lookup failed');
+}
 
-//         start_prank(mock_usdc_addr, user);
-//         usdc.approve(hub_addr, 1000_000_000);
-//         stop_prank(mock_usdc_addr);
+#[test]
+#[should_panic(expected: ('Username already taken',))]
+fn test_fail_duplicate_username() {
+    // 1. Setup
+    let user1: ContractAddress = 'USER_1'.try_into().unwrap();
+    let user2: ContractAddress = 'COPYCAT'.try_into().unwrap();
+    let zero_addr: ContractAddress = 0.try_into().unwrap();
 
-//         // 2. Create Market
-//         start_prank(hub_addr, user);
-//         hub.create_market("Q?", "", 9999999999, 'Tech');
+    let profile_addr = deploy_contract("StarkZuriProfile", ArrayTrait::new());
+    let profile = IStarkZuriProfileDispatcher { contract_address: profile_addr };
 
-//         // 3. Buy YES Shares (Invest 100 USDC)
-//         let investment = 100_000_000_u256; // 100 USDC (6 decimals implied)
-//         let shares = hub.buy_shares(1, true, investment);
+    // 2. User 1 claims "king"
+    start_cheat_caller_address(profile_addr, user1);
+    profile.set_profile('king', "The King", "", "", zero_addr);
+    stop_cheat_caller_address(profile_addr);
 
-//         stop_prank(hub_addr);
+    // 3. User 2 tries to claim "king" -> SHOULD PANIC
+    start_cheat_caller_address(profile_addr, user2);
+    profile.set_profile('king', "Imposter", "", "", zero_addr);
+    stop_cheat_caller_address(profile_addr);
+}
 
-//         // Assertions
-//         let market = hub.get_market(1);
+#[test]
+fn test_referral_system_works() {
+    // 1. Setup
+    let referrer: ContractAddress = 'OG_USER'.try_into().unwrap();
+    let newbie: ContractAddress = 'NEWBIE'.try_into().unwrap();
+    let zero_addr: ContractAddress = 0.try_into().unwrap();
 
-//         // Virtual pool should increase
-//         assert(market.virtual_yes_pool > 1_000_000_000, 'Virtual pool did not grow');
-//         // Real pot should have money
-//         assert(market.total_pot_usdc == investment, 'Pot is missing funds');
+    let profile_addr = deploy_contract("StarkZuriProfile", ArrayTrait::new());
+    let profile = IStarkZuriProfileDispatcher { contract_address: profile_addr };
 
-//         // User position
-//         let pos = hub.get_position(1, user);
-//         assert(pos.yes_shares == shares, 'Position not updated');
-//         assert(shares > 0, 'Shares should be > 0');
-//     }
+    // 2. Register the Referrer first (Must be registered to receive referrals)
+    start_cheat_caller_address(profile_addr, referrer);
+    profile.set_profile('og_user', "OG", "", "", zero_addr);
+    stop_cheat_caller_address(profile_addr);
 
-//     #[test]
-//     fn test_sell_shares() {
-//         // Setup (Identical to buy)
-//         let mock_usdc_addr = deploy_mock_token();
-//         let usdc = IERC20Dispatcher { contract_address: mock_usdc_addr };
-//         let agent = contract_address_const::<'AGENT'>();
-//         let hub_addr = deploy_hub(mock_usdc_addr, agent);
-//         let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
-//         let user = contract_address_const::<'USER'>();
-//         let admin = contract_address_const::<'ADMIN'>();
+    // 3. Register the Newbie AND pass the Referrer's address
+    start_cheat_caller_address(profile_addr, newbie);
+    profile.set_profile('new_guy', "New Guy", "", "", referrer);
+    stop_cheat_caller_address(profile_addr);
 
-//         // Fund User
-//         start_prank(mock_usdc_addr, admin);
-//         usdc.transfer(user, 1000_000_000);
-//         stop_prank(mock_usdc_addr);
-//         start_prank(mock_usdc_addr, user);
-//         usdc.approve(hub_addr, 1000_000_000);
-//         stop_prank(mock_usdc_addr);
+    // 4. Assert: Check if Referrer got the point
+    let count = profile.get_referral_count(referrer);
+    assert(count == 1, 'Referral count should be 1');
 
-//         // Buy
-//         start_prank(hub_addr, user);
-//         hub.create_market("Q?", "", 9999999999, 'Tech');
-//         let investment = 100_000_000_u256;
-//         let shares_bought = hub.buy_shares(1, true, investment);
-
-//         // Act: Panic Sell Half
-//         let shares_to_sell = shares_bought / 2;
-//         let refund = hub.sell_shares(1, true, shares_to_sell);
-//         stop_prank(hub_addr);
-
-//         // Assert
-//         let pos = hub.get_position(1, user);
-//         assert(pos.yes_shares == shares_bought - shares_to_sell, 'Shares not deducted');
-//         assert(refund > 0, 'Refund should be > 0');
-//         assert(refund < investment, 'Refund should be less than total investment');
-//     }
-
-//     #[test]
-//     fn test_resolve_and_claim() {
-//         // Setup
-//         let mock_usdc_addr = deploy_mock_token();
-//         let usdc = IERC20Dispatcher { contract_address: mock_usdc_addr };
-//         let agent = contract_address_const::<'AGENT'>();
-//         let hub_addr = deploy_hub(mock_usdc_addr, agent);
-//         let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
-//         let winner = contract_address_const::<'WINNER'>();
-//         let loser = contract_address_const::<'LOSER'>();
-//         let admin = contract_address_const::<'ADMIN'>();
-
-//         // Fund Both Users
-//         start_prank(mock_usdc_addr, admin);
-//         usdc.transfer(winner, 500_000_000);
-//         usdc.transfer(loser, 500_000_000);
-//         stop_prank(mock_usdc_addr);
-
-//         // Approve
-//         start_prank(mock_usdc_addr, winner);
-//         usdc.approve(hub_addr, 500_000_000);
-//         stop_prank(mock_usdc_addr);
-//         start_prank(mock_usdc_addr, loser);
-//         usdc.approve(hub_addr, 500_000_000);
-//         stop_prank(mock_usdc_addr);
-
-//         // Create Market
-//         start_prank(hub_addr, admin);
-//         hub.create_market("Q?", "", 9999999999, 'Tech');
-//         stop_prank(hub_addr);
-
-//         // Bets
-//         start_prank(hub_addr, winner);
-//         hub.buy_shares(1, true, 100_000_000); // Bets YES
-//         stop_prank(hub_addr);
-
-//         start_prank(hub_addr, loser);
-//         hub.buy_shares(1, false, 100_000_000); // Bets NO
-//         stop_prank(hub_addr);
-
-//         // Act: Resolve YES as Winner
-//         start_prank(hub_addr, agent);
-//         hub.resolve_market(1, true);
-//         stop_prank(hub_addr);
-
-//         // Assert: Winner Claims
-//         start_prank(hub_addr, winner);
-//         let balance_before = usdc.balanceOf(winner);
-//         hub.claim_winnings(1);
-//         let balance_after = usdc.balanceOf(winner);
-//         stop_prank(hub_addr);
-
-//         assert(balance_after > balance_before, 'Winner got nothing');
-
-//         // Assert: Loser Claims (Should fail or get 0)
-//         // Since we didn't implement robust error handling in claim (it checks outcome),
-//         // let's just check state logic or expectation.
-//         // In our contract: if you have NO shares and YES won, payout is 0.
-//         start_prank(hub_addr, loser);
-//         let l_balance_before = usdc.balanceOf(loser);
-//         hub.claim_winnings(1);
-//         let l_balance_after = usdc.balanceOf(loser);
-//         stop_prank(hub_addr);
-
-//         assert(l_balance_after == l_balance_before, 'Loser should get 0');
-//     }
-// }
+    // 5. Assert: Check if Newbie has the correct referrer stored
+    let newbie_profile = profile.get_profile(newbie);
+    assert(newbie_profile.referrer == referrer, 'Referrer not linked');
+}
