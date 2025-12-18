@@ -1,4 +1,6 @@
 use starknet::ContractAddress;
+use starknet::class_hash::ClassHash;
+
 
 #[starknet::interface]
 pub trait IStarkZuriGamification<TContractState> {
@@ -6,8 +8,8 @@ pub trait IStarkZuriGamification<TContractState> {
     fn claim_daily_reward(ref self: TContractState);
     fn get_user_stats(self: @TContractState, user: ContractAddress) -> UserStats;
     fn get_level(self: @TContractState, user: ContractAddress) -> u64;
-    // NEW: Added so Admin can authorize the Hub
     fn set_controller(ref self: TContractState, controller: ContractAddress, allowed: bool);
+    fn upgrade(ref self: TContractState, impl_hash: ClassHash);
 }
 
 // FIX 1: Added 'Copy' and 'Clone' so we can use stats multiple times
@@ -22,11 +24,15 @@ pub struct UserStats {
 
 #[starknet::contract]
 mod StarkZuriGamification {
+    use core::num::traits::Zero;
+    use starknet::class_hash::ClassHash;
     use starknet::storage::{
         Map, StoragePathEntry, StoragePointerReadAccess, StoragePointerWriteAccess,
     };
+    use starknet::syscalls::replace_class_syscall;
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
     use super::UserStats;
+
 
     #[event]
     #[derive(Drop, starknet::Event)]
@@ -164,6 +170,12 @@ mod StarkZuriGamification {
                 }
                 i += 1;
             }
+        }
+
+        fn upgrade(ref self: ContractState, impl_hash: ClassHash) {
+            assert(get_caller_address() == self.owner.read(), 'Not Owner');
+            assert(impl_hash.is_non_zero(), 'Class hash zero');
+            replace_class_syscall(impl_hash).unwrap();
         }
     }
 

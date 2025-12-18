@@ -1,4 +1,6 @@
 use starknet::ContractAddress;
+use starknet::class_hash::ClassHash;
+
 
 #[starknet::interface]
 pub trait IStarkZuriProfile<TContractState> {
@@ -14,6 +16,7 @@ pub trait IStarkZuriProfile<TContractState> {
     fn get_profile(self: @TContractState, user: ContractAddress) -> Profile;
     fn get_address_from_username(self: @TContractState, username: felt252) -> ContractAddress;
     fn get_referral_count(self: @TContractState, user: ContractAddress) -> u64;
+    fn upgrade(ref self: TContractState, impl_hash: ClassHash);
 }
 
 // FIX 1: Added 'Clone' to the derive list
@@ -31,9 +34,11 @@ pub struct Profile {
 #[starknet::contract]
 mod StarkZuriProfile {
     use core::num::traits::Zero;
+    use starknet::class_hash::ClassHash;
     use starknet::storage::{
         Map, StoragePathEntry, StoragePointerReadAccess, StoragePointerWriteAccess,
     };
+    use starknet::syscalls::replace_class_syscall;
     use starknet::{ContractAddress, get_caller_address};
     use super::Profile;
 
@@ -62,10 +67,16 @@ mod StarkZuriProfile {
         timestamp: u64,
     }
 
+    #[constructor]
+    fn constructor(ref self: ContractState, admin_address: ContractAddress) {
+        self.admin.write(admin_address);
+    }
+
     #[storage]
     struct Storage {
         profiles: Map<ContractAddress, Profile>,
         username_registry: Map<felt252, ContractAddress>,
+        admin: ContractAddress,
     }
 
     #[abi(embed_v0)]
@@ -150,6 +161,12 @@ mod StarkZuriProfile {
         fn get_referral_count(self: @ContractState, user: ContractAddress) -> u64 {
             let profile = self.profiles.entry(user).read();
             profile.referral_count
+        }
+
+        fn upgrade(ref self: ContractState, impl_hash: ClassHash) {
+            assert(get_caller_address() == self.admin.read(), 'Not Admin');
+            assert(impl_hash.is_non_zero(), 'Class hash zero');
+            replace_class_syscall(impl_hash).unwrap();
         }
     }
 }

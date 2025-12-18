@@ -1,4 +1,6 @@
 use starknet::ContractAddress;
+use starknet::class_hash::ClassHash;
+use starknet::syscalls::replace_class_syscall;
 use super::gamification::{IStarkZuriGamificationDispatcher, IStarkZuriGamificationDispatcherTrait};
 
 #[starknet::interface]
@@ -21,6 +23,7 @@ pub trait IStarkZuriHub<TContractState> {
         category: felt252,
     ) -> u64;
 
+
     fn buy_shares(
         ref self: TContractState, market_id: u64, is_yes: bool, investment_amount: u256,
     ) -> u256;
@@ -31,6 +34,11 @@ pub trait IStarkZuriHub<TContractState> {
     fn resolve_market(ref self: TContractState, market_id: u64, outcome: bool);
     fn get_market(self: @TContractState, market_id: u64) -> Market;
     fn get_position(self: @TContractState, market_id: u64, user: ContractAddress) -> UserPosition;
+    // NEW: Upgrade Function
+    fn upgrade(ref self: TContractState, impl_hash: ClassHash);
+
+    // NEW: Read version
+    fn get_version(self: @TContractState) -> u64;
 }
 
 #[derive(Drop, Serde, starknet::Store)]
@@ -62,9 +70,11 @@ pub struct UserPosition {
 mod StarkZuriHub {
     // FIX 4: Import Zero trait so .is_non_zero() works
     use core::num::traits::Zero;
+    use starknet::class_hash::ClassHash;
     use starknet::storage::{
         Map, StoragePathEntry, StoragePointerReadAccess, StoragePointerWriteAccess,
     };
+    use starknet::syscalls::replace_class_syscall;
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address, get_contract_address};
     use super::{
         IERC20Dispatcher, IERC20DispatcherTrait, IStarkZuriGamificationDispatcher,
@@ -78,6 +88,7 @@ mod StarkZuriHub {
         TradeExecuted: TradeExecuted,
         MarketStatusChanged: MarketStatusChanged,
         WinningsClaimed: WinningsClaimed,
+        Upgraded: Upgraded,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -107,6 +118,11 @@ mod StarkZuriHub {
     }
 
     #[derive(Drop, starknet::Event)]
+    struct Upgraded {
+        implementation: ClassHash,
+    }
+
+    #[derive(Drop, starknet::Event)]
     struct MarketStatusChanged {
         #[key]
         market_id: u64,
@@ -133,6 +149,8 @@ mod StarkZuriHub {
         usdc_token: ContractAddress,
         oracle_agent: ContractAddress,
         gamification_contract: ContractAddress,
+        admin: ContractAddress, // The "Felix" address
+        version: u64,
     }
 
     #[constructor]
@@ -141,11 +159,15 @@ mod StarkZuriHub {
         usdc_address: ContractAddress,
         agent_address: ContractAddress,
         gamification_address: ContractAddress,
+        admin_address: ContractAddress,
     ) {
         self.usdc_token.write(usdc_address);
         self.oracle_agent.write(agent_address);
         self.gamification_contract.write(gamification_address);
         self.market_count.write(0);
+
+        self.admin.write(admin_address);
+        self.version.write(1);
     }
 
     #[abi(embed_v0)]
@@ -388,5 +410,29 @@ mod StarkZuriHub {
         ) -> UserPosition {
             self.positions.entry(market_id).entry(user).read()
         }
+
+        fn upgrade(ref self: ContractState, impl_hash: ClassHash) {
+            let caller = get_caller_address();
+            let admin = self.admin.read();
+
+            // The "Only Felix" check
+            assert(caller == admin, 'Only Admin can upgrade');
+
+            // Assert hash is valid (non-zero check is good practice)
+            assert(impl_hash.is_non_zero(), 'Class hash cannot be zero');
+
+            // The System Call that swaps the code
+            replace_class_syscall(impl_hash).unwrap();
+
+            // Update State
+            self.version.write(self.version.read() + 1);
+
+            self.emit(Upgraded { implementation: impl_hash });
+        }
+
+        fn get_version(self: @ContractState) -> u64 {
+            self.version.read()
+        }
     }
 }
+
