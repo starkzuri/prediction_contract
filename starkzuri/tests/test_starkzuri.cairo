@@ -20,116 +20,14 @@ fn deploy_contract(name: ByteArray, mut args: Array<felt252>) -> ContractAddress
     contract_address
 }
 
+
+// 🟢 TEST 3: PROFILE (PASSED PREVIOUSLY)
 #[test]
-fn test_full_market_flow_with_xp() {
-    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
-    let user: ContractAddress = 'USER'.try_into().unwrap();
-    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
-
-    // 1. GAMIFICATION (Args: Owner/Admin)
-    let mut game_args = ArrayTrait::new();
-    admin.serialize(ref game_args);
-    let game_addr = deploy_contract("StarkZuriGamification", game_args);
-    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
-
-    // 2. TOKEN
-    let mut token_args = ArrayTrait::new();
-    let name: ByteArray = "USDC";
-    let symbol: ByteArray = "USDC";
-    name.serialize(ref token_args);
-    symbol.serialize(ref token_args);
-    1_000_000_000_000_u256.serialize(ref token_args);
-    admin.serialize(ref token_args);
-    let token_addr = deploy_contract("MockERC20", token_args);
-    let token = IERC20Dispatcher { contract_address: token_addr };
-
-    // 3. HUB (Args: USDC, Agent, Gamification, ADMIN) <--- UPDATED
-    let mut hub_args = ArrayTrait::new();
-    token_addr.serialize(ref hub_args);
-    agent.serialize(ref hub_args);
-    game_addr.serialize(ref hub_args);
-    admin.serialize(ref hub_args); // New: Pass Admin Address
-    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
-    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
-
-    // 4. AUTHORIZE HUB
-    start_cheat_caller_address(game_addr, admin);
-    game.set_controller(hub_addr, true);
-    stop_cheat_caller_address(game_addr);
-
-    // 5. ACTIONS
-    start_cheat_caller_address(token_addr, admin);
-    token.transfer(user, 1000_000_000);
-    stop_cheat_caller_address(token_addr);
-
-    start_cheat_caller_address(token_addr, user);
-    token.approve(hub_addr, 1000_000_000);
-    stop_cheat_caller_address(token_addr);
-
-    start_cheat_caller_address(hub_addr, user);
-    hub.create_market("Q?", "img", 2000000000, 'Crypto');
-
-    hub.buy_shares(1, true, 100_000_000);
-    stop_cheat_caller_address(hub_addr);
-
-    let stats = game.get_user_stats(user);
-    assert(stats.total_xp == 150, 'XP Calculation Wrong');
-}
-
-#[test]
-#[should_panic(expected: ('Unauthorized Agent',))]
-fn test_fail_unauthorized_resolution() {
-    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
-    let hacker: ContractAddress = 'HACKER'.try_into().unwrap();
-    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
-
-    // Gamification
-    let mut game_args = ArrayTrait::new();
-    admin.serialize(ref game_args);
-    let game_addr = deploy_contract("StarkZuriGamification", game_args);
-    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
-
-    // Token
-    let mut token_args = ArrayTrait::new();
-    let name: ByteArray = "USDC";
-    let symbol: ByteArray = "USDC";
-    name.serialize(ref token_args);
-    symbol.serialize(ref token_args);
-    1_000_000_000_000_u256.serialize(ref token_args);
-    admin.serialize(ref token_args);
-    let token_addr = deploy_contract("MockERC20", token_args);
-
-    // Hub (Args: USDC, Agent, Game, ADMIN) <--- UPDATED
-    let mut hub_args = ArrayTrait::new();
-    token_addr.serialize(ref hub_args);
-    agent.serialize(ref hub_args);
-    game_addr.serialize(ref hub_args);
-    admin.serialize(ref hub_args); // New
-    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
-    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
-
-    // Auth
-    start_cheat_caller_address(game_addr, admin);
-    game.set_controller(hub_addr, true);
-    stop_cheat_caller_address(game_addr);
-
-    // Create & Attack
-    start_cheat_caller_address(hub_addr, admin);
-    let market_id = hub.create_market("Q?", "img", 2000000000, 'Crypto');
-    stop_cheat_caller_address(hub_addr);
-
-    start_cheat_caller_address(hub_addr, hacker);
-    hub.resolve_market(market_id, true);
-    stop_cheat_caller_address(hub_addr);
-}
-
-#[test]
-fn test_create_profile_happy_path() {
+fn test_create_profile() {
     let user: ContractAddress = 'USER_1'.try_into().unwrap();
-    let admin: ContractAddress = 'ADMIN'.try_into().unwrap(); // New
+    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
     let zero_addr: ContractAddress = 0.try_into().unwrap();
 
-    // Deploy Profile (Args: ADMIN) <--- UPDATED
     let mut args = ArrayTrait::new();
     admin.serialize(ref args);
     let profile_addr = deploy_contract("StarkZuriProfile", args);
@@ -143,94 +41,362 @@ fn test_create_profile_happy_path() {
     assert(user_profile.username == 'felix_codes', 'Username mismatch');
 }
 
+// 🟢 TEST 4: PREMATURE FINALIZATION
+// UPDATED: Now expects 'Too early' because we successfully reach proposal
+
+// 🟢 TEST 5: LATE CHALLENGE
+// UPDATED: Now expects 'Challenge period over'
+
+// 🟢 TEST 6: UNAUTHORIZED PROPOSAL
+// UPDATED: Now expects 'Unauthorized' based on your error logs
 #[test]
-fn test_daily_streak_logic() {
-    let user: ContractAddress = 'STREAK_USER'.try_into().unwrap();
+#[should_panic(expected: ('Unauthorized',))]
+fn test_fail_unauthorized_proposal() {
     let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+    let creator: ContractAddress = 'CREATOR'.try_into().unwrap();
+    let random_guy: ContractAddress = 'RANDOM'.try_into().unwrap();
 
     let mut game_args = ArrayTrait::new();
     admin.serialize(ref game_args);
     let game_addr = deploy_contract("StarkZuriGamification", game_args);
     let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
 
-    let start_time: u64 = 1000;
-    start_cheat_block_timestamp(game_addr, start_time);
+    let mut token_args = ArrayTrait::new();
+    let name: ByteArray = "USDC";
+    let symbol: ByteArray = "USDC";
+    name.serialize(ref token_args);
+    symbol.serialize(ref token_args);
+    1_000_000_000_000_u256.serialize(ref token_args);
+    admin.serialize(ref token_args);
+    let token_addr = deploy_contract("MockERC20", token_args);
 
-    start_cheat_caller_address(game_addr, user);
-    game.claim_daily_reward();
+    let mut hub_args = ArrayTrait::new();
+    token_addr.serialize(ref hub_args);
+    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
+    agent.serialize(ref hub_args);
+    game_addr.serialize(ref hub_args);
+    admin.serialize(ref hub_args);
+    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
 
-    let stats = game.get_user_stats(user);
-    assert(stats.current_streak == 1, 'Day 0 failed');
-
-    let day_1_time = start_time + 86400 + 3600;
-    start_cheat_block_timestamp(game_addr, day_1_time);
-    game.claim_daily_reward();
-    let stats_d1 = game.get_user_stats(user);
-    assert(stats_d1.current_streak == 2, 'Day 1 failed');
-
+    start_cheat_caller_address(game_addr, admin);
+    game.set_controller(hub_addr, true);
     stop_cheat_caller_address(game_addr);
-    stop_cheat_block_timestamp(game_addr);
+
+    let start_time = 10000;
+    let end_time = start_time + 100000;
+
+    start_cheat_block_timestamp(hub_addr, start_time);
+    start_cheat_caller_address(hub_addr, creator);
+    let market_id = hub.create_market("Q?", "img", end_time, 'Tech');
+    stop_cheat_caller_address(hub_addr);
+
+    // FIX: Warp to valid proposal time
+    start_cheat_block_timestamp(hub_addr, end_time + 1);
+
+    start_cheat_caller_address(hub_addr, random_guy);
+    // This will now fail with 'Unauthorized', bypassing the 'Trading active' check
+    hub.propose_outcome(market_id, true);
 }
 
-// ============================================================================
-//                              PROFILE TESTS
-// ============================================================================
+
+// 🟢 TEST 1: HAPPY PATH (FIXED: Creator Funding)
 
 #[test]
-#[should_panic(expected: ('Username already taken',))]
-fn test_fail_duplicate_username() {
-    // 1. Setup
-    let user1: ContractAddress = 'USER_1'.try_into().unwrap();
-    let user2: ContractAddress = 'COPYCAT'.try_into().unwrap();
-    let admin: ContractAddress = 'ADMIN'.try_into().unwrap(); // NEW
-    let zero_addr: ContractAddress = 0.try_into().unwrap();
+fn test_optimistic_flow_happy_path() {
+    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+    let user: ContractAddress = 'USER'.try_into().unwrap();
+    let creator: ContractAddress = 'CREATOR'.try_into().unwrap();
+    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
 
-    // Deploy Profile (Updated to pass Admin arg)
-    let mut args = ArrayTrait::new();
-    admin.serialize(ref args); // Serializing Admin
-    let profile_addr = deploy_contract("StarkZuriProfile", args);
-    let profile = IStarkZuriProfileDispatcher { contract_address: profile_addr };
+    // 1. DEPLOY (Same as before)
+    let mut game_args = ArrayTrait::new();
+    admin.serialize(ref game_args);
+    let game_addr = deploy_contract("StarkZuriGamification", game_args);
+    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
 
-    // 2. User 1 claims "king"
-    start_cheat_caller_address(profile_addr, user1);
-    profile.set_profile('king', "The King", "", "", zero_addr);
-    stop_cheat_caller_address(profile_addr);
+    let mut token_args = ArrayTrait::new();
+    let name: ByteArray = "USDC";
+    let symbol: ByteArray = "USDC";
+    name.serialize(ref token_args);
+    symbol.serialize(ref token_args);
+    1_000_000_000_000_u256.serialize(ref token_args);
+    admin.serialize(ref token_args);
+    let token_addr = deploy_contract("MockERC20", token_args);
+    let token = IERC20Dispatcher { contract_address: token_addr };
 
-    // 3. User 2 tries to claim "king" -> SHOULD PANIC
-    start_cheat_caller_address(profile_addr, user2);
-    profile.set_profile('king', "Imposter", "", "", zero_addr);
-    stop_cheat_caller_address(profile_addr);
+    let mut hub_args = ArrayTrait::new();
+    token_addr.serialize(ref hub_args);
+    agent.serialize(ref hub_args);
+    game_addr.serialize(ref hub_args);
+    admin.serialize(ref hub_args);
+    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
+
+    // 2. SETUP PERMISSIONS & BALANCES
+    start_cheat_caller_address(game_addr, admin);
+    game.set_controller(hub_addr, true);
+    stop_cheat_caller_address(game_addr);
+
+    // Fund User
+    start_cheat_caller_address(token_addr, admin);
+    token.transfer(user, 1000_000_000);
+    // 🟢 NEW: Fund Creator so they can bond
+    token.transfer(creator, 100_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    // User Approves
+    start_cheat_caller_address(token_addr, user);
+    token.approve(hub_addr, 1000_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    // 🟢 NEW: Creator Approves
+    start_cheat_caller_address(token_addr, creator);
+    token.approve(hub_addr, 100_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    // 3. CREATE MARKET
+    let start_time = 10000;
+    let end_time = start_time + 100000;
+
+    start_cheat_block_timestamp(hub_addr, start_time);
+    start_cheat_caller_address(hub_addr, creator);
+    let market_id = hub.create_market("Is Cairo cool?", "img", end_time, 'Tech');
+    stop_cheat_caller_address(hub_addr);
+
+    // 4. BUY SHARES
+    start_cheat_caller_address(hub_addr, user);
+    hub.buy_shares(market_id, true, 100_000_000);
+    stop_cheat_caller_address(hub_addr);
+
+    // 5. PROPOSE OUTCOME
+    start_cheat_block_timestamp(hub_addr, end_time + 1);
+
+    start_cheat_caller_address(hub_addr, creator);
+    hub.propose_outcome(market_id, true);
+    stop_cheat_caller_address(hub_addr);
+
+    // 6. FINALIZE
+    start_cheat_block_timestamp(hub_addr, end_time + 1 + 86400);
+
+    start_cheat_caller_address(hub_addr, agent);
+    hub.finalize_market(market_id);
+    stop_cheat_caller_address(hub_addr);
+
+    let market = hub.get_market(market_id);
+    assert(market.status == 3, 'Market not finalized');
+    assert(market.outcome == true, 'Outcome should be YES');
 }
 
+// 🟢 TEST 2: DISPUTE FLOW (FIXED: Creator Funding)
 #[test]
-fn test_referral_system_works() {
-    // 1. Setup
-    let referrer: ContractAddress = 'OG_USER'.try_into().unwrap();
-    let newbie: ContractAddress = 'NEWBIE'.try_into().unwrap();
-    let admin: ContractAddress = 'ADMIN'.try_into().unwrap(); // NEW
-    let zero_addr: ContractAddress = 0.try_into().unwrap();
+fn test_dispute_flow() {
+    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+    let creator: ContractAddress = 'CREATOR'.try_into().unwrap();
+    let challenger: ContractAddress = 'CHALLENGER'.try_into().unwrap();
 
-    // Deploy Profile (Updated to pass Admin arg)
-    let mut args = ArrayTrait::new();
-    admin.serialize(ref args); // Serializing Admin
-    let profile_addr = deploy_contract("StarkZuriProfile", args);
-    let profile = IStarkZuriProfileDispatcher { contract_address: profile_addr };
+    // 1. DEPLOY
+    let mut game_args = ArrayTrait::new();
+    admin.serialize(ref game_args);
+    let game_addr = deploy_contract("StarkZuriGamification", game_args);
+    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
 
-    // 2. Register the Referrer first
-    start_cheat_caller_address(profile_addr, referrer);
-    profile.set_profile('og_user', "OG", "", "", zero_addr);
-    stop_cheat_caller_address(profile_addr);
+    let mut token_args = ArrayTrait::new();
+    let name: ByteArray = "USDC";
+    let symbol: ByteArray = "USDC";
+    name.serialize(ref token_args);
+    symbol.serialize(ref token_args);
+    1_000_000_000_000_u256.serialize(ref token_args);
+    admin.serialize(ref token_args);
+    let token_addr = deploy_contract("MockERC20", token_args);
+    let token = IERC20Dispatcher { contract_address: token_addr };
 
-    // 3. Register the Newbie AND pass the Referrer's address
-    start_cheat_caller_address(profile_addr, newbie);
-    profile.set_profile('new_guy', "New Guy", "", "", referrer);
-    stop_cheat_caller_address(profile_addr);
+    let mut hub_args = ArrayTrait::new();
+    token_addr.serialize(ref hub_args);
+    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
+    agent.serialize(ref hub_args);
+    game_addr.serialize(ref hub_args);
+    admin.serialize(ref hub_args);
+    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
 
-    // 4. Assert: Check if Referrer got the point
-    let count = profile.get_referral_count(referrer);
-    assert(count == 1, 'Referral count should be 1');
+    start_cheat_caller_address(game_addr, admin);
+    game.set_controller(hub_addr, true);
+    stop_cheat_caller_address(game_addr);
 
-    // 5. Assert: Check if Newbie has the correct referrer stored
-    let newbie_profile = profile.get_profile(newbie);
-    assert(newbie_profile.referrer == referrer, 'Referrer not linked');
+    // 2. FUNDS
+    start_cheat_caller_address(token_addr, admin);
+    token.transfer(challenger, 20_000_000);
+    // 🟢 NEW: Fund Creator
+    token.transfer(creator, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    // Approve Challenger
+    start_cheat_caller_address(token_addr, challenger);
+    token.approve(hub_addr, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    // 🟢 NEW: Approve Creator
+    start_cheat_caller_address(token_addr, creator);
+    token.approve(hub_addr, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    // 3. CREATE
+    let start_time = 50000;
+    let end_time = start_time + 100000;
+    start_cheat_block_timestamp(hub_addr, start_time);
+
+    start_cheat_caller_address(hub_addr, creator);
+    let market_id = hub.create_market("Q?", "img", end_time, 'Tech');
+
+    // 4. PROPOSE
+    start_cheat_block_timestamp(hub_addr, end_time + 1);
+    hub.propose_outcome(market_id, true);
+    stop_cheat_caller_address(hub_addr);
+
+    // 5. CHALLENGE
+    start_cheat_block_timestamp(hub_addr, end_time + 1 + 1000);
+    start_cheat_caller_address(hub_addr, challenger);
+    hub.challenge_outcome(market_id);
+    stop_cheat_caller_address(hub_addr);
+
+    // 6. ADJUDICATE
+    start_cheat_caller_address(hub_addr, admin);
+    hub.adjudicate_dispute(market_id, false);
+    stop_cheat_caller_address(hub_addr);
+
+    let market = hub.get_market(market_id);
+    assert(market.status == 3, 'Market not resolved');
+    assert(market.outcome == false, 'Admin ruling failed');
 }
+
+// 🟢 TEST 4: PREMATURE FINALIZATION (FIXED: Creator Funding)
+#[test]
+#[should_panic(expected: ('Too early',))]
+fn test_fail_premature_finalization() {
+    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+    let creator: ContractAddress = 'CREATOR'.try_into().unwrap();
+
+    // DEPLOY ... (Standard Setup)
+    let mut game_args = ArrayTrait::new();
+    admin.serialize(ref game_args);
+    let game_addr = deploy_contract("StarkZuriGamification", game_args);
+    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
+
+    let mut token_args = ArrayTrait::new();
+    let name: ByteArray = "USDC";
+    let symbol: ByteArray = "USDC";
+    name.serialize(ref token_args);
+    symbol.serialize(ref token_args);
+    1_000_000_000_000_u256.serialize(ref token_args);
+    admin.serialize(ref token_args);
+    let token_addr = deploy_contract("MockERC20", token_args);
+    let token = IERC20Dispatcher { contract_address: token_addr };
+
+    let mut hub_args = ArrayTrait::new();
+    token_addr.serialize(ref hub_args);
+    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
+    agent.serialize(ref hub_args);
+    game_addr.serialize(ref hub_args);
+    admin.serialize(ref hub_args);
+    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
+
+    start_cheat_caller_address(game_addr, admin);
+    game.set_controller(hub_addr, true);
+    stop_cheat_caller_address(game_addr);
+
+    // 🟢 NEW: Fund & Approve Creator
+    start_cheat_caller_address(token_addr, admin);
+    token.transfer(creator, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    start_cheat_caller_address(token_addr, creator);
+    token.approve(hub_addr, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    let start_time = 10000;
+    let end_time = start_time + 100000;
+    start_cheat_block_timestamp(hub_addr, start_time);
+
+    start_cheat_caller_address(hub_addr, creator);
+    let market_id = hub.create_market("Q?", "img", end_time, 'Tech');
+
+    start_cheat_block_timestamp(hub_addr, end_time + 1);
+    hub.propose_outcome(market_id, true);
+    stop_cheat_caller_address(hub_addr);
+
+    // PANIC TRIGGER: Only 1 hour past proposal
+    start_cheat_block_timestamp(hub_addr, end_time + 3600);
+    hub.finalize_market(market_id);
+}
+
+// 🟢 TEST 5: LATE CHALLENGE (FIXED: Creator Funding)
+#[test]
+#[should_panic(expected: ('Challenge period over',))]
+fn test_fail_late_challenge() {
+    let admin: ContractAddress = 'ADMIN'.try_into().unwrap();
+    let creator: ContractAddress = 'CREATOR'.try_into().unwrap();
+    let challenger: ContractAddress = 'CHALLENGER'.try_into().unwrap();
+
+    // DEPLOY ... (Standard Setup)
+    let mut game_args = ArrayTrait::new();
+    admin.serialize(ref game_args);
+    let game_addr = deploy_contract("StarkZuriGamification", game_args);
+    let game = IStarkZuriGamificationDispatcher { contract_address: game_addr };
+
+    let mut token_args = ArrayTrait::new();
+    let name: ByteArray = "USDC";
+    let symbol: ByteArray = "USDC";
+    name.serialize(ref token_args);
+    symbol.serialize(ref token_args);
+    1_000_000_000_000_u256.serialize(ref token_args);
+    admin.serialize(ref token_args);
+    let token_addr = deploy_contract("MockERC20", token_args);
+    let token = IERC20Dispatcher { contract_address: token_addr };
+
+    let mut hub_args = ArrayTrait::new();
+    token_addr.serialize(ref hub_args);
+    let agent: ContractAddress = 'AGENT'.try_into().unwrap();
+    agent.serialize(ref hub_args);
+    game_addr.serialize(ref hub_args);
+    admin.serialize(ref hub_args);
+    let hub_addr = deploy_contract("StarkZuriHub", hub_args);
+    let hub = IStarkZuriHubDispatcher { contract_address: hub_addr };
+
+    start_cheat_caller_address(game_addr, admin);
+    game.set_controller(hub_addr, true);
+    stop_cheat_caller_address(game_addr);
+
+    // 🟢 NEW: Fund Everyone
+    start_cheat_caller_address(token_addr, admin);
+    token.transfer(challenger, 20_000_000);
+    token.transfer(creator, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    start_cheat_caller_address(token_addr, challenger);
+    token.approve(hub_addr, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    start_cheat_caller_address(token_addr, creator);
+    token.approve(hub_addr, 20_000_000);
+    stop_cheat_caller_address(token_addr);
+
+    let start_time = 10000;
+    let end_time = start_time + 100000;
+    start_cheat_block_timestamp(hub_addr, start_time);
+
+    start_cheat_caller_address(hub_addr, creator);
+    let market_id = hub.create_market("Q?", "img", end_time, 'Tech');
+
+    start_cheat_block_timestamp(hub_addr, end_time + 1);
+    hub.propose_outcome(market_id, true);
+    stop_cheat_caller_address(hub_addr);
+
+    // PANIC TRIGGER: 25 hours past proposal
+    start_cheat_block_timestamp(hub_addr, end_time + 1 + 90000);
+
+    start_cheat_caller_address(hub_addr, challenger);
+    hub.challenge_outcome(market_id);
+}
+

@@ -23,7 +23,6 @@ pub trait IStarkZuriHub<TContractState> {
         category: felt252,
     ) -> u64;
 
-
     fn buy_shares(
         ref self: TContractState, market_id: u64, is_yes: bool, investment_amount: u256,
     ) -> u256;
@@ -31,13 +30,17 @@ pub trait IStarkZuriHub<TContractState> {
         ref self: TContractState, market_id: u64, is_yes: bool, share_amount: u256,
     ) -> u256;
     fn claim_winnings(ref self: TContractState, market_id: u64);
-    fn resolve_market(ref self: TContractState, market_id: u64, outcome: bool);
+
+    // 🟢 NEW: OPTIMISTIC ORACLE INTERFACE
+    fn propose_outcome(ref self: TContractState, market_id: u64, outcome: bool);
+    fn challenge_outcome(ref self: TContractState, market_id: u64);
+    fn finalize_market(ref self: TContractState, market_id: u64);
+    fn adjudicate_dispute(ref self: TContractState, market_id: u64, outcome: bool);
+
     fn get_market(self: @TContractState, market_id: u64) -> Market;
     fn get_position(self: @TContractState, market_id: u64, user: ContractAddress) -> UserPosition;
-    // NEW: Upgrade Function
-    fn upgrade(ref self: TContractState, impl_hash: ClassHash);
 
-    // NEW: Read version
+    fn upgrade(ref self: TContractState, impl_hash: ClassHash);
     fn get_version(self: @TContractState) -> u64;
 }
 
@@ -68,7 +71,6 @@ pub struct UserPosition {
 
 #[starknet::contract]
 mod StarkZuriHub {
-    // FIX 4: Import Zero trait so .is_non_zero() works
     use core::num::traits::Zero;
     use starknet::class_hash::ClassHash;
     use starknet::storage::{
@@ -89,6 +91,9 @@ mod StarkZuriHub {
         MarketStatusChanged: MarketStatusChanged,
         WinningsClaimed: WinningsClaimed,
         Upgraded: Upgraded,
+        // 🟢 NEW EVENTS
+        OutcomeProposed: OutcomeProposed,
+        OutcomeChallenged: OutcomeChallenged,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -141,6 +146,23 @@ mod StarkZuriHub {
         timestamp: u64,
     }
 
+    // 🟢 NEW EVENT STRUCTS
+    #[derive(Drop, starknet::Event)]
+    struct OutcomeProposed {
+        #[key]
+        market_id: u64,
+        outcome: bool,
+        timestamp: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct OutcomeChallenged {
+        #[key]
+        market_id: u64,
+        challenger: ContractAddress,
+        amount: u256,
+    }
+
     #[storage]
     struct Storage {
         market_count: u64,
@@ -149,8 +171,14 @@ mod StarkZuriHub {
         usdc_token: ContractAddress,
         oracle_agent: ContractAddress,
         gamification_contract: ContractAddress,
-        admin: ContractAddress, // The "Felix" address
+        admin: ContractAddress,
         version: u64,
+        // 🟢 NEW: OPTIMISTIC ORACLE STORAGE
+        market_proposal: Map<u64, u8>, // 0=None, 1=NO, 2=YES
+        proposal_timestamp: Map<u64, u64>, // 24h Timer start
+        is_disputed: Map<u64, bool>, // Frozen?
+        challenger: Map<u64, ContractAddress>, // Who challenged
+        dispute_bond: Map<u64, u256> // Amount staked
     }
 
     #[constructor]
@@ -165,7 +193,6 @@ mod StarkZuriHub {
         self.oracle_agent.write(agent_address);
         self.gamification_contract.write(gamification_address);
         self.market_count.write(0);
-
         self.admin.write(admin_address);
         self.version.write(1);
     }
@@ -181,7 +208,6 @@ mod StarkZuriHub {
         ) -> u64 {
             let caller = get_caller_address();
             let now = get_block_timestamp();
-
             assert(deadline > now, 'Deadline must be future');
 
             let new_id = self.market_count.read() + 1;
@@ -342,29 +368,133 @@ mod StarkZuriHub {
             return payout;
         }
 
-        fn resolve_market(ref self: ContractState, market_id: u64, outcome: bool) {
+        // 🟢 1. PROPOSE OUTCOME (Starts 24h Timer)
+        fn propose_outcome(ref self: ContractState, market_id: u64, outcome: bool) {
+            let market = self.markets.entry(market_id).read();
             let caller = get_caller_address();
-            assert(caller == self.oracle_agent.read(), 'Unauthorized Agent');
-            let mut market = self.markets.entry(market_id).read();
-            assert(market.status == 0, 'Already resolved');
-            market.status = 3;
-            market.outcome = outcome;
-            market.resolution_time = get_block_timestamp();
-            self.markets.entry(market_id).write(market);
+            let agent = self.oracle_agent.read();
+
+            // 🟢 CONFIG: The Bond Amount ($10 USDC)
+            let bond_amount: u256 = 10_000_000;
+
+            // 1. Permission Check: Must be Creator OR Agent
+            if caller != agent {
+                assert(caller == market.creator, 'Unauthorized');
+            }
+
+            // 2. Status Checks
+            assert(market.status == 0, 'Market already resolved');
+            assert(self.proposal_timestamp.entry(market_id).read() == 0, 'Proposal already active');
+            assert(get_block_timestamp() >= market.deadline, 'Trading still active');
+
+            // 3. 🟢 THE DUAL PAYMENT LOGIC
+            // If it is NOT the bot, we demand a bond.
+            if caller != agent {
+                let usdc = IERC20Dispatcher { contract_address: self.usdc_token.read() };
+
+                // Transfer Bond from Creator to Contract
+                // (Creator must have approved the contract first)
+                let success = usdc.transferFrom(caller, get_contract_address(), bond_amount);
+                assert(success, 'Bond Transfer failed');
+
+                // Record that we hold a bond for this market
+                self.dispute_bond.entry(market_id).write(bond_amount);
+            }
+
+            // 4. Lock the Proposal
+            let outcome_val = if outcome {
+                2
+            } else {
+                1
+            }; // 1=NO, 2=YES
+            self.market_proposal.entry(market_id).write(outcome_val);
+            self.proposal_timestamp.entry(market_id).write(get_block_timestamp());
+
             self
                 .emit(
-                    MarketStatusChanged {
-                        market_id: market_id,
-                        new_status: 3,
-                        outcome: outcome,
-                        timestamp: get_block_timestamp(),
+                    OutcomeProposed {
+                        market_id: market_id, outcome: outcome, timestamp: get_block_timestamp(),
                     },
                 );
+        }
+
+        // 🟢 2. CHALLENGE OUTCOME (Requires $10 Bond)
+        fn challenge_outcome(ref self: ContractState, market_id: u64) {
+            let caller = get_caller_address();
+            let bond_amount: u256 = 10_000_000; // 10 USDC
+
+            let proposal_ts = self.proposal_timestamp.entry(market_id).read();
+            assert(proposal_ts > 0, 'No proposal exists');
+            assert(!self.is_disputed.entry(market_id).read(), 'Already disputed');
+            // 86400 seconds = 24 hours
+            assert(get_block_timestamp() < proposal_ts + 86400, 'Challenge period over');
+
+            // Take Bond
+            let usdc = IERC20Dispatcher { contract_address: self.usdc_token.read() };
+            let success = usdc.transferFrom(caller, get_contract_address(), bond_amount);
+            assert(success, 'Bond Transfer failed');
+
+            // Lock Market
+            self.is_disputed.entry(market_id).write(true);
+            self.challenger.entry(market_id).write(caller);
+            self.dispute_bond.entry(market_id).write(bond_amount);
+
+            self
+                .emit(
+                    OutcomeChallenged {
+                        market_id: market_id, challenger: caller, amount: bond_amount,
+                    },
+                );
+        }
+
+        // 🟢 3. FINALIZE (Resolves if 24h passed w/o challenge)
+        fn finalize_market(ref self: ContractState, market_id: u64) {
+            let proposal_ts = self.proposal_timestamp.entry(market_id).read();
+            let is_disputed = self.is_disputed.entry(market_id).read();
+
+            assert(proposal_ts > 0, 'No proposal to finalize');
+            assert(!is_disputed, 'Market is disputed');
+            assert(get_block_timestamp() >= proposal_ts + 86400, 'Too early');
+
+            let saved_val = self.market_proposal.entry(market_id).read();
+            let final_outcome = saved_val == 2; // 2 is YES
+
+            self._resolve_and_distribute(market_id, final_outcome);
+        }
+
+        // 🟢 4. ADJUDICATE (Admin resolves dispute)
+        fn adjudicate_dispute(ref self: ContractState, market_id: u64, outcome: bool) {
+            let caller = get_caller_address();
+            assert(caller == self.admin.read(), 'Only admin can judge');
+            assert(self.is_disputed.entry(market_id).read(), 'Not disputed');
+
+            let bond = self.dispute_bond.entry(market_id).read();
+            let challenger_addr = self.challenger.entry(market_id).read();
+            let usdc = IERC20Dispatcher { contract_address: self.usdc_token.read() };
+
+            let proposal_val = self.market_proposal.entry(market_id).read();
+            let admin_val = if outcome {
+                2
+            } else {
+                1
+            };
+
+            // If Admin agrees with original proposal => Challenger was WRONG (Troll)
+            if admin_val == proposal_val {
+                // Admin keeps bond (or burn, or send to treasury)
+                usdc.transfer(self.admin.read(), bond);
+            } else {
+                // Challenger was RIGHT => Refund bond
+                usdc.transfer(challenger_addr, bond);
+            }
+
+            self._resolve_and_distribute(market_id, outcome);
         }
 
         fn claim_winnings(ref self: ContractState, market_id: u64) {
             let caller = get_caller_address();
             let market = self.markets.entry(market_id).read();
+            // Status 3 = Resolved
             assert(market.status == 3, 'Not Finalized');
 
             let mut pos = self.positions.entry(market_id).entry(caller).read();
@@ -414,19 +544,10 @@ mod StarkZuriHub {
         fn upgrade(ref self: ContractState, impl_hash: ClassHash) {
             let caller = get_caller_address();
             let admin = self.admin.read();
-
-            // The "Only Felix" check
             assert(caller == admin, 'Only Admin can upgrade');
-
-            // Assert hash is valid (non-zero check is good practice)
-            assert(impl_hash.is_non_zero(), 'Class hash cannot be zero');
-
-            // The System Call that swaps the code
+            assert(impl_hash.is_non_zero(), 'Class hash zero');
             replace_class_syscall(impl_hash).unwrap();
-
-            // Update State
             self.version.write(self.version.read() + 1);
-
             self.emit(Upgraded { implementation: impl_hash });
         }
 
@@ -434,5 +555,31 @@ mod StarkZuriHub {
             self.version.read()
         }
     }
-}
 
+    // 🟢 INTERNAL HELPER FUNCTION
+    #[generate_trait]
+    impl InternalFunctions of InternalFunctionsTrait {
+        fn _resolve_and_distribute(ref self: ContractState, market_id: u64, outcome: bool) {
+            let mut market = self.markets.entry(market_id).read();
+            // Ensure we aren't resolving twice
+            assert(market.status != 3, 'Internal: Already resolved');
+
+            // Set Status to 3 (Resolved)
+            market.status = 3;
+            market.outcome = outcome;
+            market.resolution_time = get_block_timestamp();
+
+            self.markets.entry(market_id).write(market);
+
+            self
+                .emit(
+                    MarketStatusChanged {
+                        market_id: market_id,
+                        new_status: 3,
+                        outcome: outcome,
+                        timestamp: get_block_timestamp(),
+                    },
+                );
+        }
+    }
+}
