@@ -106,6 +106,7 @@ mod StarkZuriHub {
         category: felt252,
         question_uri: ByteArray,
         media_uri: ByteArray,
+        deadline: u64,
         timestamp: u64,
     }
 
@@ -247,6 +248,7 @@ mod StarkZuriHub {
                         category: category,
                         question_uri: question_uri,
                         media_uri: media_uri,
+                        deadline: deadline,
                         timestamp: now,
                     },
                 );
@@ -394,7 +396,9 @@ mod StarkZuriHub {
 
                 // Transfer Bond from Creator to Contract
                 // (Creator must have approved the contract first)
+
                 let success = usdc.transferFrom(caller, get_contract_address(), bond_amount);
+
                 assert(success, 'Bond Transfer failed');
 
                 // Record that we hold a bond for this market

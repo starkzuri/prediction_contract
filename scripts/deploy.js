@@ -1,7 +1,7 @@
 const {
   RpcProvider,
   Account,
-  CallData, // We will use this dynamically now
+  CallData,
   hash,
   json,
   ETransactionVersion,
@@ -15,14 +15,16 @@ async function main() {
   console.log("🚀 Starting StarkZuri Ecosystem Deployment...");
 
   // ================= 1. CONFIGURATION =================
-  const nodeUrl = process.env.STARKNET_NODE_URL || "http://localhost:8080/rpc";
+  const nodeUrl =
+    process.env.STARKNET_NODE_URL ||
+    "https://starknet-sepolia.public.blastapi.io/rpc/v0_7";
   const provider = new RpcProvider({ nodeUrl });
 
   const accountAddress = process.env.STARKNET_ACCOUNT_ADDRESS;
   if (!accountAddress)
     throw new Error("❌ Missing STARKNET_ACCOUNT_ADDRESS in .env");
 
-  // SECURITY: Prompt for Private Key (No .env storage)
+  // SECURITY: Prompt for Private Key
   console.log(`👤 Deploying for Account: ${accountAddress}`);
 
   const rl = readline.createInterface({
@@ -66,7 +68,6 @@ async function main() {
   }
 
   // ================= 3. DECLARE CONTRACTS =================
-  // Helper to Declare or Get Hash
   async function deployOrGetClassHash(name) {
     const artifacts = getArtifacts(name);
     const classHash = hash.computeContractClassHash(artifacts.sierra);
@@ -83,18 +84,15 @@ async function main() {
       await provider.waitForTransaction(declareTx.transaction_hash);
       console.log(`🎉 ${name} Declared! Hash: ${classHash}`);
     }
-    // Return artifacts too, we need the ABI for the fix!
     return { classHash, abi: artifacts.sierra.abi };
   }
 
-  // Load all artifacts and ABIs
+  // Load artifacts (Skipping MockERC20 since we use Real ETH now)
   const gameInfo = await deployOrGetClassHash("StarkZuriGamification");
   const profileInfo = await deployOrGetClassHash("StarkZuriProfile");
-  const tokenInfo = await deployOrGetClassHash("MockERC20");
   const hubInfo = await deployOrGetClassHash("StarkZuriHub");
 
-  // ================= 4. DEPLOYMENT (THE FIX IS HERE) =================
-  // We now use 'new CallData(abi)' so it knows how to handle ByteArrays!
+  // ================= 4. DEPLOYMENT =================
 
   // --- A. Deploy Gamification ---
   console.log("\n⏳ Deploying Gamification...");
@@ -124,33 +122,22 @@ async function main() {
   const profileAddress = profileDeploy.contract_address;
   console.log(`🆔 Profile Deployed: ${profileAddress}`);
 
-  // --- C. Deploy Mock USDC (CRITICAL FIX) ---
-  console.log("⏳ Deploying Mock USDC...");
-  // FIX: Using ABI-aware CallData handles 'ByteArray' correctly
-  const tokenCallData = new CallData(tokenInfo.abi);
-  const tokenConstructor = tokenCallData.compile("constructor", {
-    name: "Mock USDC",
-    symbol: "mUSDC",
-    initial_supply: 100000000000000n,
-    recipient: accountAddress,
-  });
-
-  const tokenDeploy = await account.deployContract({
-    classHash: tokenInfo.classHash,
-    constructorCalldata: tokenConstructor,
-  });
-  await provider.waitForTransaction(tokenDeploy.transaction_hash);
-  const tokenAddress = tokenDeploy.contract_address;
-  console.log(`💵 Mock USDC Deployed: ${tokenAddress}`);
+  // --- C. SET TOKEN ADDRESS (THE FIX) ---
+  console.log("ℹ️ Using Official Sepolia ETH as Payment Token...");
+  // Official Starknet Sepolia ETH Address
+  const tokenAddress =
+    "0x0512feac6339ff7889822cb5aa2a86c848e9d392bb0e3e237c008674feed8343";
 
   // --- D. Deploy Hub ---
   console.log("⏳ Deploying Hub...");
   const hubCallData = new CallData(hubInfo.abi);
+
+  // Constructor: [token_address, fee_collector, gamification_contract, profile_contract]
   const hubConstructor = hubCallData.compile("constructor", [
-    tokenAddress,
-    accountAddress,
+    tokenAddress, // <--- NOW USING REAL ETH
+    accountAddress, // Fee Recipient
     gameAddress,
-    accountAddress,
+    accountAddress, // (Placeholder for Oracle/Owner if needed)
   ]);
 
   const hubDeploy = await account.deployContract({
@@ -178,11 +165,13 @@ async function main() {
   console.log("\n=============================================");
   console.log("       🎉 DEPLOYMENT COMPLETE 🎉");
   console.log("=============================================");
-  console.log(`REACT_APP_GAMIFICATION_ADDRESS=${gameAddress}`);
-  console.log(`REACT_APP_PROFILE_ADDRESS=${profileAddress}`);
-  console.log(`REACT_APP_USDC_ADDRESS=${tokenAddress}`);
-  console.log(`REACT_APP_HUB_ADDRESS=${hubAddress}`);
+  console.log(`VITE_GAMIFICATION_ADDRESS=${gameAddress}`);
+  console.log(`VITE_PROFILE_ADDRESS=${profileAddress}`);
+  // Hardcoded Logic: This address is static for Sepolia
+  console.log(`VITE_USDC_ADDRESS=${tokenAddress}`);
+  console.log(`VITE_HUB_ADDRESS=${hubAddress}`);
   console.log("=============================================");
+  console.log("👉 Update your frontend .env file with these VITE_ values!");
 }
 
 main().catch((error) => {
